@@ -1,11 +1,6 @@
-
 %% Cooperative dual-arm manipulators controller:
-%% Description: Impedance control + task-space inverse dynamics motion controller for 12 dofs 
-%% Enforce mass-damper-spring system between on CDTS variables: "internal impedance" on xr
-%%                                                              "external impedance" on xa
-%% Adapt relative stiffness values to guarantee safe interaction with obj + external disturbance rejection
-
-%% Simulation: horizontal grasping of an object on an hard surface.
+%% Admittance control on absolute pose of dual-arm system. 
+%% Simulation: grasping task
 
 include_namespace_dq;
 
@@ -17,26 +12,12 @@ ddxc1_data = zeros(size(time,2),8);
 yr1_data = zeros(size(time,2),6);
 dyr1_data =  zeros(size(time,2),6);
 
-%%admittance variables relative pose
-xc2_data = zeros(size(time,2),8);
-dxc2_data = zeros(size(time,2),8);
-ddxc2_data = zeros(size(time,2),8);
-yr2_data = zeros(size(time,2),6);
-dyr2_data =  zeros(size(time,2),6);
-
-%%stiffness and damping
-kx_data = zeros(size(time,2),1);
-ky_data = zeros(size(time,2),1);
-kz_data = zeros(size(time,2),1);
-
 %%wrench vectors
 wa_ext_data = zeros(size(time,2),6); %external wrench mapped to abs task-space (world_frame)
 wr_ext_data = zeros(size(time,2),6); %external wrench mapped to rel task-space  (world_frame)
 
 psi_ext_a_data = zeros(size(time,2),6); %external wrench mapped to abs task-space (xa frame)
 psi_ext_r_data = zeros(size(time,2),6); %external wrench mapped to abs task-space (xr frame)
-
-cnstKout =0;
 
 %% Initialize V-REP interface
 
@@ -131,7 +112,7 @@ r0 = vec4(xa_in.P); %orientation of absolute frame
 r0_r = vec4(xr_in.P); %orientation of relative frame
 
 %% Desired absolute and relative pose trajectories
-[xa_d,dxa_d,ddxa_d,xr_d,dxr_d,ddxr_d,grasp_data,phase_data] = grasp_traj_ad(xin_1,xin_2,time);
+[xa_d,dxa_d,ddxa_d,xr_d,dxr_d,ddxr_d,grasp_data,phase_data] = gripper_traj(xin_1,xin_2,time);
 
 %% Setting to synchronous mode
 %---------------------------------------
@@ -263,23 +244,12 @@ while sim.simxGetConnectionId(clientID)~=-1
         xr1_adm = xc1_data(i-1,:)';
         yr1_in = yr1_data(i-1,:)';
         dyr1_in = dyr1_data(i-1,:)';
-        % rel pose
-        xr2_adm = xc2_data(i-1,:)';
-        yr2_in = yr2_data(i-1,:)';
-        dyr2_in = dyr2_data(i-1,:)';
-        %
     else
         % abs pose
         xr1_adm = vec8(xa_in);
         e_in1 = vec8(DQ(xr1_adm)'*DQ(xa_d(1,:)));
         yr1_in = vec6(log(DQ(e_in1)));
         dyr1_in = zeros(6,1);
-        %rel pose
-        xr2_adm = vec8(xr_in);
-        e_in2 = vec8(DQ(xr2_adm)'*DQ(xr_d(1,:)));
-        yr2_in = vec6(log(DQ(e_in2)));
-        dyr2_in = zeros(6,1);
-        %
     end
     
     %External wrenches on arm1 and arm2 (world-frame)
@@ -290,9 +260,8 @@ while sim.simxGetConnectionId(clientID)~=-1
     f2 = wr_2(1:3,:);
     
     %store values
-    data.f1_ext(i,:) = wr_1(1:3,:);
-    data.f2_ext(i,:) = wr_2(1:3,:); 
-
+    data.f1_ext(i,:) = f1;
+    data.f2_ext(i,:) = f2; 
     
     %wrenches linear mapping to absolute and relative task-spaces
 
@@ -306,18 +275,15 @@ while sim.simxGetConnectionId(clientID)~=-1
     
     %express wrenches wrt to absolute and relative frames 
     psi_ext_a = vec6(DQ(r0)'*DQ(Wa)*DQ(r0));
-    psi_ext_r = vec6(DQ(r0_1)'*DQ(Wr)*DQ(r0_1));
-    
     psi_ext_a_data(i,:) = psi_ext_a; 
-    psi_ext_r_data(i,:) = psi_ext_r;
-    
+   
     %ext forces abs task space
     data.fa_ext(i,:) = wa_ext_data(i,1:3)';
     data.Ma(i,:) = wa_ext_data(i,4:6)';
 
     %ext forces rel task space
     data.fr_ext(i,:) = wr_ext_data(i,1:3)';
-    data.Mr(i,:) = wa_ext_data(i,4:6)';
+    data.Mr(i,:) = wr_ext_data(i,4:6)';
 
     %Desired absolute pose variables
     xa_des = xa_d(i,:)'; 
@@ -332,42 +298,13 @@ while sim.simxGetConnectionId(clientID)~=-1
     %%retrieve position
     pos_a = vec4(DQ(xa).translation); %current absolute position
     p_a = [pos_a(2);pos_a(3);pos_a(4)]; 
-
-    if i == 1
-        delta = zeros(4,1);
-    else
-        x_hat = DQ(xc2_data(i-1,:)')'*DQ(xr_d(i,:)); %current displacement
-        delta = vec4(x_hat.translation) %retrieve relative position displacment 
-    end
+   
         
-%     %% Stiffness adapter
-%     if cnstKout == 0 && i>1
-%         cnstK = kz_data(i-1,:);
-%         cnstF = cnstKout;
-%     end
-%     if (cnstF == 0) && (abs(cnstKout)>0)
-%         cnstF = cnstKout;
-%     end
-% 
-%     [K_var,D_var,cnstKout] = stiff_adapter(p_a,x1,xr,delta,f1,f2,phase_data(i,:), cnstK, cnstF); 
-    
-
-    kr_rot = 300; 
-    dr_rot = 2*sqrt(300*1.5); 
-    K_var = diag([kr_rot*ones(3,1);50*ones(3,1)]);
-    D_var = diag([dr_rot*ones(3,1);2*sqrt(50*1.5)*ones(3,1)]);
-
-
-    kx_data(i,:) = K_var(4,4);
-    ky_data(i,:) = K_var(5,5);
-    kz_data(i,:) = K_var(6,6);
-
-
-    %% Impedance control 
+    %% Stiffness and damping
+    %% Admittance control 
     %abs pose
     [xd,dxd,ddxd,yr,dyr] = admittance_control(xa_des,dxa_des,ddxa_des,psi_ext_a',xr1_adm,yr1_in,dyr1_in,Md1,Kd1,Bd1,time);
-    %rel pose
-    [xd2,dxd2,ddxd2,yr2,dyr2] = admittance_control(xr_des,dxr_des,ddxr_des,psi_ext_r',xr2_adm,yr2_in,dyr2_in,Md2,K_var,D_var,time);
+   
     
     %store values
     xc1_data(i,:) = xd; 
@@ -376,19 +313,14 @@ while sim.simxGetConnectionId(clientID)~=-1
     yr1_data(i,:) = yr; 
     dyr1_data(i,:) = dyr; 
     
-    xc2_data(i,:) = xd2; 
-    dxc2_data(i,:) = dxd2;
-    ddxc2_data(i,:) = ddxd2;
-    yr2_data(i,:) = yr2; 
-    dyr2_data(i,:) = dyr2; 
 
     xd_des = xc1_data(i,:)';
     dxd_des = dxc1_data(i,:)';
     ddxd_des = ddxc1_data(i,:)'; 
 
-    xd2_des = xc2_data(i,:)';
-    dxd2_des = dxc2_data(i,:)';
-    ddxd2_des = ddxc2_data(i,:)'; 
+    xd2_des = xr_des;
+    dxd2_des = dxr_des;
+    ddxd2_des = ddxr_des; 
     
     %save data
     %absolute pose 
@@ -400,11 +332,6 @@ while sim.simxGetConnectionId(clientID)~=-1
     %relative pose
     data.pos_r(:,i) = vec4(DQ(xr).translation); 
     data.pos_r_d(:,i) = vec4(DQ(xr_des).translation); 
-    data.pos2_c(:,i) = vec4(DQ(xd2_des).translation); 
-    
-    %relative stiffness modulation
-    data.kd2(:,i) = [kx_data(i,:);ky_data(i,:);kz_data(i,:)];
-
 
     %% Full-dual position dynamic control
     %%Define error:
@@ -623,8 +550,6 @@ hold on
 plot(tt,data.pos_r_d(2,:),'r--','LineWidth',3); 
 hold on, grid on
 plot(tt,data.pos_r(2,:),'c','LineWidth',2);
-hold on, grid on
-plot(tt,data.pos2_c(2,:),'b-.','LineWidth',2.5);
 ylabel('$x/\mathrm{m}$', 'Interpreter', 'latex', 'FontSize', 12)
 title('Relative position')
 
@@ -632,20 +557,15 @@ subplot(3, 1, 2)
 plot(tt,data.pos_r_d(3,:),'r--','LineWidth',3); 
 hold on, grid on
 plot(tt,data.pos_r(3,:),'c','LineWidth',2);
-hold on, grid on
-plot(tt,data.pos2_c(3,:),'b-.','LineWidth',2.5);
 ylabel('$y/\mathrm{m}$', 'Interpreter', 'latex', 'FontSize', 12)
 
 subplot(3, 1, 3)
 plot(tt,data.pos_r_d(4,:),'r--','LineWidth',3); 
 hold on, grid on
 plot(tt,data.pos_r(4,:),'c','LineWidth',2);
-hold on, grid on
-plot(tt,data.pos2_c(4,:),'b-.','LineWidth',2.5);
-legend('zd','z','zc')
 xlabel('$t/\mathrm{s}$', 'Interpreter', 'latex', 'FontSize', 12)
 ylabel('$z/\mathrm{m}$', 'Interpreter', 'latex', 'FontSize', 12)
-legend('des','curr','comp','Interpreter', 'latex', 'FontSize', 10)
+legend('des','curr','Interpreter', 'latex', 'FontSize', 10)
 
 
 
@@ -657,18 +577,18 @@ f5;
 subplot(3, 1, 1)
 grid on
 hold on
-plot(tt,data2.f1_ext(:,1),'LineWidth',2);
+plot(tt,data.f1_ext(:,1),'LineWidth',2);
 ylabel('$fx/\mathrm{m}$', 'Interpreter', 'latex', 'FontSize', 12)
 title('External force Arm1')
 subplot(3, 1, 2)
 grid on
 hold on
-plot(tt,data2.f1_ext(:,2),'LineWidth',2);
+plot(tt,data.f1_ext(:,2),'LineWidth',2);
 ylabel('$fy/\mathrm{m}$', 'Interpreter', 'latex', 'FontSize', 12)
 subplot(3, 1, 3)
 grid on
 hold on
-plot(tt,data2.f1_ext(:,3),'LineWidth',2);
+plot(tt,data.f1_ext(:,3),'LineWidth',2);
 xlabel('$t/\mathrm{s}$', 'Interpreter', 'latex', 'FontSize', 12)
 ylabel('$fz/\mathrm{m}$', 'Interpreter', 'latex', 'FontSize', 12)
 
@@ -679,19 +599,19 @@ f6;
 subplot(3, 1, 1)
 grid on
 hold on
-plot(tt,data2.f2_ext(:,1),'LineWidth',2);
+plot(tt,data.f2_ext(:,1),'LineWidth',2);
 ylabel('$fx/\mathrm{m}$', 'Interpreter', 'latex', 'FontSize', 12)
 title('External force Arm2')
 subplot(3, 1, 2)
 grid on
 hold on
-plot(tt,data2.f2_ext(:,2),'LineWidth',2);
+plot(tt,data.f2_ext(:,2),'LineWidth',2);
 ylabel('$fy/\mathrm{m}$', 'Interpreter', 'latex', 'FontSize', 12)
 grid on
 subplot(3, 1, 3)
 grid on
 hold on
-plot(tt,data2.f2_ext(:,3),'LineWidth',2);
+plot(tt,data.f2_ext(:,3),'LineWidth',2);
 xlabel('$t/\mathrm{s}$', 'Interpreter', 'latex', 'FontSize', 12)
 ylabel('$fz/\mathrm{m}$', 'Interpreter', 'latex', 'FontSize', 12)
 
@@ -741,24 +661,5 @@ plot(tt,data.pos2(4,:),'LineWidth',2);
 xlabel('time [s]')
 ylabel('$z/\mathrm{m}$', 'Interpreter', 'latex', 'FontSize', 12)
 
-f9 = figure; 
-f9.Renderer = 'painters';
-f9; 
-subplot(3, 1, 1)
-grid on
-hold on
-plot(tt,kx_data,'LineWidth',2);
-ylabel('$kx/\mathrm{m}$', 'Interpreter', 'latex', 'FontSize', 12)
-title('stiffness')
-subplot(3, 1, 2)
-grid on
-hold on
-plot(tt,ky_data,'LineWidth',2);
-ylabel('$ky/\mathrm{m}$', 'Interpreter', 'latex', 'FontSize', 12)
-subplot(3, 1, 3)
-grid on
-hold on
-plot(tt,kz_data,'LineWidth',2);
-xlabel('time [s]')
-ylabel('$kz/\mathrm{m}$', 'Interpreter', 'latex', 'FontSize', 12)
+
 
